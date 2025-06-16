@@ -1,90 +1,81 @@
 import streamlit as st
 import pandas as pd
-import ta
-import ccxt
+from binance.client import Client
+from ta.trend import EMAIndicator
+from ta.momentum import RSIIndicator, StochRSIIndicator
+import time
 import os
-import requests
-from datetime import datetime, timedelta
 
-# Настройки
-st.set_page_config(page_title="📈 Крипто-сигналы (Binance)", layout="centered")
-st.title("📈 Крипто-сигналы (Binance)")
-st.write("Получай простые технические сигналы по ключевым парам.")
+# Binance API (можно оставить пустыми для публичных данных)
+client = Client(api_key=os.getenv("BINANCE_API_KEY", ""), api_secret=os.getenv("BINANCE_API_SECRET", ""))
 
-# Telegram данные
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or "7903391510:AAFgkj03oD8CGL3hfVNKPAE64phffpsxAEM"
-TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID") or 646839309)
+PAIRS = {
+    "BTCUSDT": "BTC/USDT",
+    "ETHUSDT": "ETH/USDT",
+    "SOLUSDT": "SOL/USDT",
+    "PAXGUSDT": "PAXG/USDT"
+}
 
-def send_telegram_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+def fetch_ohlcv(symbol: str, interval="1h", limit=150):
     try:
-        response = requests.post(url, data=data)
-        response.raise_for_status()
-    except Exception as e:
-        print("❌ Ошибка Telegram:", e)
-
-# Binance
-exchange = ccxt.binance()
-
-PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "PAXG/USDT"]
-
-def fetch_data(pair):
-    try:
-        ohlcv = exchange.fetch_ohlcv(pair, timeframe='1h', limit=100)
-        df = pd.DataFrame(ohlcv, columns=['Time', 'Open', 'High', 'Low', 'Close', 'Volume'])
-        df['Time'] = pd.to_datetime(df['Time'], unit='ms')
+        klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+        if not klines or len(klines) < 100:
+            return None
+        df = pd.DataFrame(klines, columns=[
+            "Open time", "Open", "High", "Low", "Close", "Volume",
+            "Close time", "Quote asset volume", "Number of trades",
+            "Taker buy base", "Taker buy quote", "Ignore"
+        ])
+        df["Close"] = pd.to_numeric(df["Close"])
         return df
     except Exception as e:
-        print(f"Ошибка получения данных для {pair}: {e}")
-        return pd.DataFrame()
-
-def analyze(df):
-    if df.empty or len(df) < 50:
+        print(f"Ошибка при получении данных для {symbol}: {e}")
         return None
 
-    df["EMA50"] = ta.trend.ema_indicator(df["Close"], window=50).ema_indicator()
-    df["RSI"] = ta.momentum.rsi(df["Close"])
-    df["StochRSI"] = ta.momentum.stochrsi(df["Close"])
+def analyze(df):
+    if df is None or df.empty or len(df) < 100:
+        return ["❌ Недостаточно данных"]
+
+    df["EMA50"] = EMAIndicator(close=df["Close"], window=50).ema_indicator()
+    df["RSI"] = RSIIndicator(close=df["Close"]).rsi()
+    df["StochRSI"] = StochRSIIndicator(close=df["Close"]).stochrsi()
 
     last = df.iloc[-1]
-    signals = []
+    signal = []
 
     if last["RSI"] < 30:
-        signals.append("🟢 RSI перепродан")
+        signal.append("🟢 RSI перепродан")
     elif last["RSI"] > 70:
-        signals.append("🔴 RSI перекуплен")
+        signal.append("🔴 RSI перекуплен")
 
     if last["Close"] > last["EMA50"]:
-        signals.append("📈 Цена выше EMA50 (тренд вверх)")
+        signal.append("📈 Цена выше EMA50 (бычий тренд)")
     else:
-        signals.append("📉 Цена ниже EMA50 (тренд вниз)")
+        signal.append("📉 Цена ниже EMA50 (медвежий тренд)")
 
     if last["StochRSI"] < 0.2:
-        signals.append("🟢 StochRSI перепродан")
+        signal.append("🟢 StochRSI перепродан")
     elif last["StochRSI"] > 0.8:
-        signals.append("🔴 StochRSI перекуплен")
+        signal.append("🔴 StochRSI перекуплен")
 
-    return signals if signals else ["ℹ️ Сигналов нет"]
+    return signal if signal else ["⚪ Сигналов нет"]
 
-# Отображение
-all_signals = []
-for pair in PAIRS:
-    df = fetch_data(pair)
-    analysis = analyze(df)
+# Streamlit UI
+st.set_page_config(page_title="Крипто-сигналы (Binance)", layout="centered")
 
-    st.subheader(pair)
-    if not analysis:
-        st.error("❌ Недостаточно данных")
-        all_signals.append(f"{pair}:\n❌ Недостаточно данных")
-    else:
-        for s in analysis:
-            st.write(s)
-        all_signals.append(f"{pair}:\n" + "\n".join(analysis))
+st.title("📈 Крипто-сигналы (Binance)")
+st.subheader("Получай простые технические сигналы по ключевым парам.")
+st.markdown("---")
 
-# Кнопка отправки в Telegram
-if st.button("📲 Отправить сигналы в Telegram"):
-    for signal in all_signals:
-        if "🟢" in signal or "🔴" in signal:
-            send_telegram_message(signal)
-    st.success("Сигналы отправлены!")
+for symbol, display_name in PAIRS.items():
+    df = fetch_ohlcv(symbol)
+    signals = analyze(df)
+
+    st.markdown(f"### {display_name}")
+    for s in signals:
+        st.write(s)
+    st.markdown("---")
+
+# Обновление по кнопке
+if st.button("🔄 Обновить"):
+    st.rerun()
