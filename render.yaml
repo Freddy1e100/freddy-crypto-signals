@@ -1,11 +1,10 @@
 services:
   - type: web
-    name: crypto-signals-app
-    env: python
+    name: freddy-crypto-signals
+    runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run main.py --server.port $PORT --server.enableCORS false
+    startCommand: ./start.sh
     envVars:
-      - key: TELEGRAM_TOKEN
-        value: 7903391510:AAFgkj03oD8CGL3hfVNKPAE64phffpsxAEM
-      - key: TELEGRAM_CHAT_ID
-        value: "646839309"
+      - key: PORT
+        value: 8501
+        
